@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtual env
+.venv/
+venv/
+
+# Data artifacts (keep outputs out of git unless you want to publish small CSVs)
+data/raw/
+data/interim/
+data/processed/
+reports/figures/
+reports/tables/
+*.parquet
+
+# Streamlit
+.streamlit/
+.streamlit_cache/
+.streamlit/secrets.toml
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
