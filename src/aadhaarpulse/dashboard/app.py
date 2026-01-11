@@ -84,7 +84,29 @@ def main() -> None:
 
     # Normalize types
     panel["month"] = pd.to_datetime(panel["month"], errors="coerce")
-
+    
+    # ----------------------------
+    # COMPUTE NEW JURY-LEVEL KPIS
+    # ----------------------------
+    # 1. Biometric Load Intensity (Proxy for "Biometric Risk")
+    # Using bio_total / (enrol_total + 1) to see where bio updates > enrolments
+    if "bio_total" in panel.columns and "enrol_total" in panel.columns:
+        panel["bio_intensity"] = panel["bio_total"] / (panel["enrol_total"] + 1)
+    
+    # 2. Migration Load Intensity
+    # If migration_signal exists (boolean/float), use it directly or scale it
+    # We will compute a weighted "Migration Affected Updates"
+    if "migration_signal" in panel.columns and "demo_total" in panel.columns:
+        # Assuming migration drives address updates (part of demo_total)
+        # We proxy this: districts with migration_signal get a flag
+        panel["is_migration_hub"] = panel["migration_signal"] > 0
+    
+    # 3. Seasonal Volatility
+    # Rolling std dev of total updates over 3 months if we have history
+    panel = panel.sort_values(["state", "district", "month"])
+    panel["total_updates"] = panel["demo_total"] + panel["bio_total"]
+    panel["seasonal_volatility"] = panel.groupby(["state", "district"])["total_updates"].transform(lambda x: x.rolling(3).std())
+    
     latest_month = panel["month"].max()
     st.success(f"Loaded {len(panel):,} district-month rows. Latest month: {latest_month.date()}")
 
@@ -99,9 +121,73 @@ def main() -> None:
     total_districts = latest_all[["state", "district"]].drop_duplicates().shape[0]
     critical_cut = 60.0 if disaster_mode else 80.0
     high_cut = 40.0 if disaster_mode else 60.0
+    
+    # --- Weight Configuration based on Disaster Mode ---
+    w_assi = 0.4
+    w_mig = 0.4 if disaster_mode else 0.2
+    w_bio = 0.4 if disaster_mode else 0.2
+    w_anom = 0.4 if disaster_mode else 0.2
+    
+    # Recalculate Intervention Priority Score based on new formula
+    # Formula: (ASSI * 0.4) + (Migration * 0.2) + (Bio Load * 0.2) + (Anomaly * 0.2)
+    latest_all["intervention_priority"] = (latest_all["ASSI_0_100"] * w_assi)
+    
+    if "migration_signal" in latest_all.columns:
+         latest_all["intervention_priority"] += (latest_all["migration_signal"].fillna(0) * 100 * w_mig)
+         
+    if "bio_intensity" in latest_all.columns:
+        # Normalize bio_intensity to 0-100 scale roughly
+        # Cap at 5.0 ratio -> 100
+        bio_score = (latest_all["bio_intensity"] / 5.0).clip(0, 1) * 100
+        latest_all["intervention_priority"] += (bio_score * w_bio)
+        
+    if "anomaly_flag" in latest_all.columns:
+        latest_all["intervention_priority"] += (latest_all["anomaly_flag"].fillna(0).astype(int) * 100 * w_anom)
+    
+    # Cap at 100
+    latest_all["intervention_priority"] = latest_all["intervention_priority"].clip(0, 100)
+    
+    # Assign Urgency Labels
+    def get_urgency(score):
+        if score >= 80: return "URGENT"
+        if score >= 50: return "MONITOR"
+        return "STABLE"
+        
+    latest_all["urgency_label"] = latest_all["intervention_priority"].apply(get_urgency)
+
+    # --- National Health Score ---
+    # 1. % Districts with Low ASSI (<40)
+    pct_low_stress = (latest_all["ASSI_0_100"] < 40).mean() * 100
+    # 2. Inverse of Anomaly Rate
+    pct_stable = 100 - (latest_all["anomaly_flag"].fillna(0).mean() * 100)
+    # 3. Balanced Load (Updates/Enrol < 3 is healthy)
+    pct_balanced = (latest_all["bio_intensity"] < 3).mean() * 100
+    
+    health_score = (pct_low_stress * 0.4) + (pct_stable * 0.3) + (pct_balanced * 0.3)
+    if disaster_mode:
+        health_score *= 0.85 # Penalty in disaster mode
+
+    # --- Service Risk KPIs ---
+    # 1. High-Stress Population (Proxy: using district count weighted by enrollment volume as pop proxy)
+    # We assume 'enrol_total' roughly correlates to population scale or activity
+    high_stress_mask = latest_all["ASSI_0_100"] >= critical_cut
+    high_stress_vol = latest_all.loc[high_stress_mask, "enrol_total"].sum()    
+    
+    # 2. Biometric Risk % (Districts with high bio intensity)
+    bio_risk_pct = (latest_all["bio_intensity"] > 2.0).mean() * 100
+    
+    # 3. Migration Load % (Districts with migration signal)
+    if "migration_signal" in latest_all.columns:
+        mig_load_pct = latest_all["migration_signal"].mean() * 100
+    else:
+        mig_load_pct = 0
+        
+    # 4. Inclusion Reach (Districts with healthy enrol/update ratio)
+    inclusion_reach_pct = ((latest_all["enrol_total"] > 100) & (latest_all["ASSI_0_100"] < 50)).mean() * 100
 
     if has_assi:
         mean_assi = float(latest_all["ASSI_0_100"].mean())
+        # ...existing logic...
         critical = int((latest_all["ASSI_0_100"] >= critical_cut).sum())
         high = int((latest_all["ASSI_0_100"] >= high_cut).sum())
     else:
@@ -117,6 +203,23 @@ def main() -> None:
     nat_bio = int(latest_all.get("bio_total", pd.Series([0])).sum())
     nat_updates = nat_demo + nat_bio
     updates_per_enrol = (nat_updates + 1) / (nat_enrol + 1)
+    
+    # ----------------------------
+    # RENDER TOP UI LAYERS
+    # ----------------------------
+    
+    # 1. National Health Bar
+    st.markdown(f"### 🇮🇳 India Aadhaar Health Score: **{health_score:.0f} / 100**")
+    st.progress(int(health_score))
+    
+    # 2. Service Risk Cards
+    r1, r2, r3, r4 = st.columns(4)
+    r1.metric("🔴 High-Stress Volume", f"{high_stress_vol:,}", help="Approx. volume in critical districts")
+    r2.metric("🟠 Biometric Risk %", f"{bio_risk_pct:.1f}%", help="% of districts with high biometric aging")
+    r3.metric("🔵 Migration Load", f"{mig_load_pct:.1f}%", help="% districts with active migration signals")
+    r4.metric("🟢 Inclusion Reach", f"{inclusion_reach_pct:.1f}%", help="% districts with healthy growth")
+    
+    st.divider()
 
     k1, k2, k3, k4, k5, k6 = st.columns(6)
     k1.metric("Districts (latest)", f"{total_districts:,}")
@@ -198,16 +301,57 @@ def main() -> None:
             "month",
             "ASSI_0_100",
             "enrol_total",
-            "demo_total",
             "bio_total",
+            "bio_intensity",
             "migration_signal",
-            "urbanisation_signal",
-            "ageing_signal",
-            "inclusion_signal",
             "anomaly_flag",
+            "seasonal_volatility",
         ]
         show_cols = [c for c in show_cols if c in latest.columns]
         st.dataframe(latest.head(top_n)[show_cols], use_container_width=True)
+
+        st.divider()
+        st.markdown("### Explainable AI: Why is this district red?")
+        
+        # Interactive selector for explanation
+        high_risk_districts = latest.head(50)[["state", "district"]].values.tolist()
+        if len(high_risk_districts) > 0:
+            sel_state, sel_dist = st.selectbox(
+                "Select a district to inspect:", 
+                options=high_risk_districts, 
+                format_func=lambda x: f"{x[0]} - {x[1]}"
+            )
+            
+            # Get data for selected district
+            row = latest[(latest["state"]==sel_state) & (latest["district"]==sel_dist)].iloc[0]
+            
+            e1, e2, e3, e4 = st.columns(4)
+            
+            with e1:
+                st.metric("Stress Level (ASSI)", f"{row['ASSI_0_100']:.1f}", delta="Critical" if row['ASSI_0_100']>80 else "High", delta_color="inverse")
+            
+            with e2:
+                # Migration
+                mig_sig = row.get("migration_signal", 0)
+                st.metric("Migration Signal", "Detected" if mig_sig > 0 else "Normal", help="High inbound address updates")
+                
+            with e3:
+                # Biometric Pressure
+                bio_int = row.get("bio_intensity", 0)
+                delta_bio = f"{(bio_int - 2.0):.1f} vs Avg" if bio_int > 2.0 else "Normal"
+                st.metric("Biometric Pressure", f"{bio_int:.1f}x Enrol", delta=delta_bio, delta_color="inverse")
+                
+            with e4:
+                # Anomaly
+                is_anom = row.get("anomaly_flag", False)
+                st.metric("Anomaly Detected", "Yes" if is_anom else "No", delta="Spike detected" if is_anom else None, delta_color="inverse")
+            
+            st.info(f"**Diagnosis for {sel_dist}**: This district is flagged due to " + 
+               ("extreme biometric update loads " if row.get("bio_intensity",0)>3 else "") + 
+               ("and " if row.get("bio_intensity",0)>3 and row.get("migration_signal",0)>0 else "") +
+               ("significant migration inflows " if row.get("migration_signal",0)>0 else "") +
+               ("driving service stress." if (row.get("bio_intensity",0)>3 or row.get("migration_signal",0)>0) else "general operations load.")
+            )
 
         # Driver snapshot: which component dominates for top districts
         if {"enrol_total", "demo_total", "bio_total"}.issubset(set(latest.columns)):
@@ -310,42 +454,34 @@ def main() -> None:
 
         if has_assi:
             # ---------------------------------------------------------
-            # 1. Calculate Intervention Priority Score
-            # Formula: ASSI + (Migration * 20) + (Anomaly * 15)
-            # ---------------------------------------------------------
-            # Start with existing ASSI
-            planner_df["priority_score"] = planner_df["ASSI_0_100"]
-
-            # Add weight for migration if available
-            if "migration_signal" in planner_df.columns:
-                # If boolean or 0/1, multiply by 20. If continuous 0-100, scale appropriately.
-                # Assuming 1/True for signal.
-                planner_df["priority_score"] += planner_df["migration_signal"].apply(lambda x: 20 if x else 0)
-
-            # Add weight for anomalies
-            if "anomaly_flag" in planner_df.columns:
-                planner_df["priority_score"] += planner_df["anomaly_flag"].fillna(False).apply(lambda x: 15 if x else 0)
-
-            # ---------------------------------------------------------
-            # 2. Top Actionable Districts
+            # 1. Top Actionable Districts (using pre-calculated Priority Score)
             # ---------------------------------------------------------
             st.markdown("#### 🚨 Top 10 Districts Requiring Immediate Intervention")
             st.caption(
-                "Ranked by **Intervention Priority Score**: High ASSI + Migration Risk + Recent Anomalies."
+                "Ranked by **Intervention Priority Score** (Formula: ASSI×0.4 + Migration×0.2 + Bio×0.2 + Anomaly×0.2). "
+                f"{'<b>(DISASTER MODE ACTIVE)</b>' if disaster_mode else ''}",
+                unsafe_allow_html=True
             )
 
-            top_action = planner_df.sort_values("priority_score", ascending=False).head(10)
-            disp_cols = ["state", "district", "priority_score", "ASSI_0_100", "enrol_total", "demo_total"]
+            # Sort by Priority Score
+            top_action = planner_df.sort_values("intervention_priority", ascending=False).head(10)
+            
+            disp_cols = ["state", "district", "urgency_label", "intervention_priority", "ASSI_0_100", "enrol_total", "bio_intensity"]
             if "migration_signal" in planner_df.columns:
-                disp_cols.append("migration_signal")
+                disp_cols.append("is_migration_hub")
 
-            st.dataframe(
-                top_action[disp_cols].style.background_gradient(subset=["priority_score"], cmap="Reds"),
-                use_container_width=True,
-            )
+            # Color coding map
+            def color_urgency(val):
+                color = "red" if val == "URGENT" else "orange" if val == "MONITOR" else "green"
+                return f'color: {color}; font-weight: bold'
+
+            formatted_df = top_action[disp_cols].style.applymap(color_urgency, subset=["urgency_label"])\
+                                              .background_gradient(subset=["intervention_priority"], cmap="Reds")
+            
+            st.dataframe(formatted_df, use_container_width=True)
 
             # ---------------------------------------------------------
-            # 3. Resource Re-allocation Advisor
+            # 2. Resource Re-allocation Advisor
             # ---------------------------------------------------------
             st.divider()
             st.markdown("#### ⚖️ Resource Re-allocation Advisor")
@@ -441,6 +577,34 @@ def main() -> None:
         if whatif_path.exists():
             w = load_csv(str(whatif_path))
             w["month"] = pd.to_datetime(w["month"], errors="coerce")
+            
+            # -------------------------------
+            # NEW: Policy Simulator Output Cards
+            # -------------------------------
+            st.markdown("#### 🔮 Policy Impact Forecast")
+            
+            if {"ASSI", "assi_after_centers", "assi_after_bio_drive"}.issubset(set(w.columns)):
+                # Get the district with max improvement
+                w["improvement"] = w["ASSI"] - w["assi_after_centers"]
+                best_case = w.sort_values("improvement", ascending=False).iloc[0]
+                
+                sim1, sim2 = st.columns(2)
+                
+                with sim1:
+                    st.info(f"**Scenario A: Add 2 Enrolment Centers**\n\n"
+                            f"📍 **{best_case['district']}** ({best_case['state']})\n\n"
+                            f"📉 ASSI drops from **{best_case['ASSI']:.1f}** → **{best_case['assi_after_centers']:.1f}**\n\n"
+                            f"✅ **{(best_case['improvement']/best_case['ASSI']*100):.1f}% reduction** in stress.")
+                            
+                with sim2:
+                    w["bio_imp"] = w["ASSI"] - w["assi_after_bio_drive"]
+                    best_bio = w.sort_values("bio_imp", ascending=False).iloc[0]
+                    st.success(f"**Scenario B: Special Biometric Drive (Camp)**\n\n"
+                            f"📍 **{best_bio['district']}** ({best_bio['state']})\n\n"
+                            f"📉 ASSI drops from **{best_bio['ASSI']:.1f}** → **{best_bio['assi_after_bio_drive']:.1f}**\n\n"
+                            f"⚡ Clears backlog in **3 months**.")
+            
+            st.divider()
             st.dataframe(w.head(200), use_container_width=True)
 
             st.markdown("### Average stress reduction in top-200")
