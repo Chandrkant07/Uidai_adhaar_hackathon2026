@@ -73,6 +73,13 @@ def main() -> None:
         if st.button("Reload data"):
             st.cache_data.clear()
 
+        st.divider()
+        disaster_mode = st.toggle(
+            "🚨 Disaster Mode",
+            value=False,
+            help="Lowers stress thresholds (Critical: 80→60) to simulate crisis sensitivity (e.g., Pandemic/Flood)."
+        )
+
     panel = load_panel(str(_must_exist(panel_path)))
 
     # Normalize types
@@ -90,8 +97,8 @@ def main() -> None:
     has_anom = "anomaly_flag" in latest_all.columns
 
     total_districts = latest_all[["state", "district"]].drop_duplicates().shape[0]
-    critical_cut = 80.0
-    high_cut = 60.0
+    critical_cut = 60.0 if disaster_mode else 80.0
+    high_cut = 40.0 if disaster_mode else 60.0
 
     if has_assi:
         mean_assi = float(latest_all["ASSI_0_100"].mean())
@@ -177,8 +184,8 @@ def main() -> None:
     st.divider()
 
     # Tabs
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
-        ["Stress hotspots", "Trends", "Forecasts", "What-if simulator", "Downloads"]
+    tab1, tab2, tab_intervention, tab3, tab4, tab5 = st.tabs(
+        ["Stress hotspots", "Trends", "Intervention Planner", "Forecasts", "What-if simulator", "Downloads"]
     )
 
     with tab1:
@@ -295,6 +302,93 @@ def main() -> None:
             )
         else:
             st.caption("Forecast alerts appear once `district_forecast_12m.csv` exists.")
+
+    with tab_intervention:
+        st.subheader("Intervention Planner (Immediate Action)")
+
+        planner_df = latest_all.copy()
+
+        if has_assi:
+            # ---------------------------------------------------------
+            # 1. Calculate Intervention Priority Score
+            # Formula: ASSI + (Migration * 20) + (Anomaly * 15)
+            # ---------------------------------------------------------
+            # Start with existing ASSI
+            planner_df["priority_score"] = planner_df["ASSI_0_100"]
+
+            # Add weight for migration if available
+            if "migration_signal" in planner_df.columns:
+                # If boolean or 0/1, multiply by 20. If continuous 0-100, scale appropriately.
+                # Assuming 1/True for signal.
+                planner_df["priority_score"] += planner_df["migration_signal"].apply(lambda x: 20 if x else 0)
+
+            # Add weight for anomalies
+            if "anomaly_flag" in planner_df.columns:
+                planner_df["priority_score"] += planner_df["anomaly_flag"].fillna(False).apply(lambda x: 15 if x else 0)
+
+            # ---------------------------------------------------------
+            # 2. Top Actionable Districts
+            # ---------------------------------------------------------
+            st.markdown("#### 🚨 Top 10 Districts Requiring Immediate Intervention")
+            st.caption(
+                "Ranked by **Intervention Priority Score**: High ASSI + Migration Risk + Recent Anomalies."
+            )
+
+            top_action = planner_df.sort_values("priority_score", ascending=False).head(10)
+            disp_cols = ["state", "district", "priority_score", "ASSI_0_100", "enrol_total", "demo_total"]
+            if "migration_signal" in planner_df.columns:
+                disp_cols.append("migration_signal")
+
+            st.dataframe(
+                top_action[disp_cols].style.background_gradient(subset=["priority_score"], cmap="Reds"),
+                use_container_width=True,
+            )
+
+            # ---------------------------------------------------------
+            # 3. Resource Re-allocation Advisor
+            # ---------------------------------------------------------
+            st.divider()
+            st.markdown("#### ⚖️ Resource Re-allocation Advisor")
+            st.caption(
+                "Optimization Engine: Shift kits/staff from **Surplus (Low Stress)** to **Deficit (Critical)** districts within the same state."
+            )
+
+            st_plan_list = sorted(planner_df["state"].dropna().unique())
+            selected_state_plan = st.selectbox("Select State to Optimize", options=st_plan_list, key="plan_st")
+
+            if selected_state_plan:
+                state_data = planner_df[planner_df["state"] == selected_state_plan]
+
+                col_deficit, col_surplus = st.columns(2)
+
+                with col_deficit:
+                    st.error("🔴 DEFICIT (Stress > 70)")
+                    st.caption("Move resources TO here")
+                    deficit_df = (
+                        state_data[state_data["ASSI_0_100"] >= 70]
+                        .sort_values("ASSI_0_100", ascending=False)
+                        .reset_index(drop=True)
+                    )
+                    if not deficit_df.empty:
+                        st.dataframe(deficit_df[["district", "ASSI_0_100"]], use_container_width=True)
+                    else:
+                        st.info("No critical districts in this state.")
+
+                with col_surplus:
+                    st.success("🟢 SURPLUS (Stress < 40)")
+                    st.caption("Move resources FROM here")
+                    surplus_df = (
+                        state_data[state_data["ASSI_0_100"] <= 40]
+                        .sort_values("ASSI_0_100", ascending=True)
+                        .reset_index(drop=True)
+                    )
+                    if not surplus_df.empty:
+                        st.dataframe(surplus_df[["district", "ASSI_0_100"]], use_container_width=True)
+                    else:
+                        st.warning("No low-stress districts available to draw from.")
+
+        else:
+            st.warning("Intervention Planner requires ASSI computation. Please run the pipeline.")
 
     with tab3:
         st.subheader("Forecasts (next 12 months)")
