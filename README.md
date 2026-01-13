@@ -1,11 +1,11 @@
-# AadhaarPulse – India’s Identity & Service Intelligence Engine (UIDAI Hackathon 2026)
+# AadhaarGyan – India’s Identity & Service Intelligence Engine (UIDAI Hackathon 2026)
 
 **Team Lead**: Chandrkant07 | **Branch**: Main
 
 ---
 
 ## 🚀 The Vision
-AadhaarPulse transforms **aggregated Aadhaar enrolment and update data** into a national-scale **early-warning system**. Instead of reacting to centre-level stress, UIDAI can now **predict** service demand, **detect** migration hotspots, and **prevent** exclusions using our proprietary **Aadhaar Service Stress Index (ASSI)**.
+AadhaarGyan transforms **aggregated Aadhaar enrolment and update data** into a national-scale **early-warning system**. Instead of reacting to centre-level stress, UIDAI can now **predict** service demand, **detect** migration hotspots, and **prevent** exclusions using our proprietary **Aadhaar Service Stress Index (ASSI)**.
 
 > *"We don't just show data. We tell UIDAI where to send the next mobile enrolment van."*
 

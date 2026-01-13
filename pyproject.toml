@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "aadhaarpulse"
 version = "0.1.0"
-description = "AadhaarPulse – India’s Identity & Service Intelligence Engine (UIDAI Hackathon 2026)"
+description = "AadhaarGyan – India’s Identity & Service Intelligence Engine (UIDAI Hackathon 2026)"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

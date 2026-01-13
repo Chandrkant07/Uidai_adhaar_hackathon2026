@@ -51,9 +51,9 @@ def load_csv(csv_path: str) -> pd.DataFrame:
 
 
 def main() -> None:
-    st.set_page_config(page_title="AadhaarPulse Dashboard", layout="wide")
+    st.set_page_config(page_title="AadhaarGyan Dashboard", layout="wide")
 
-    st.title("AadhaarPulse – India’s Identity & Service Intelligence Engine")
+    st.title("AadhaarGyan – India’s Identity & Service Intelligence Engine")
     st.caption(
         "District-level intelligence from UIDAI enrolment + demographic update + biometric update datasets."
     )
