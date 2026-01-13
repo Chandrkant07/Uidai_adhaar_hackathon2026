@@ -7,6 +7,8 @@
 ## 🚀 The Vision
 AadhaarGyan transforms **aggregated Aadhaar enrolment and update data** into a national-scale **early-warning system**. Instead of reacting to centre-level stress, UIDAI can now **predict** service demand, **detect** migration hotspots, and **prevent** exclusions using our proprietary **Aadhaar Service Stress Index (ASSI)**.
 
+**Project report:** see `docs/AADHAARGYAN_PROJECT_REPORT.md`.
+
 > *"We don't just show data. We tell UIDAI where to send the next mobile enrolment van."*
 
 ---
